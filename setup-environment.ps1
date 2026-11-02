@@ -1,0 +1,118 @@
+<#
+.SYNOPSIS
+    Main setup script for Catoconsting project environments
+.DESCRIPTION
+    Orchestrates the setup of Windows environments for the Catoconsting Java web application.
+    Supports both Desktop PCs (development) and Windows Server VMs (deployment).
+.PARAMETER Environment
+    The environment type: 'Desktop' or 'Server'
+.PARAMETER ComputerName
+    Optional name to identify this computer (e.g., 'Desktop-1', 'Desktop-2', 'Server-VM')
+.PARAMETER GitUserName
+    Desktop only: Git user.name to configure instead of prompting
+.PARAMETER GitUserEmail
+    Desktop only: Git user.email to configure instead of prompting
+.PARAMETER RepoUrl
+    Desktop only: repository to clone into the workspace instead of prompting
+.PARAMETER NonInteractive
+    Desktop only: never prompt; steps with missing values are skipped
+.PARAMETER AppPortProfile
+    Server only: firewall profiles that may reach the Java app on port 8080
+    (default Domain and Private; use Any to also allow Public networks)
+.EXAMPLE
+    .\setup-environment.ps1 -Environment Desktop -ComputerName "Desktop-1"
+.EXAMPLE
+    .\setup-environment.ps1 -Environment Server -ComputerName "Server-VM"
+.EXAMPLE
+    .\setup-environment.ps1 -Environment Desktop -NonInteractive -GitUserName "Jane Doe" -GitUserEmail "jane@example.com"
+#>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive setup script')]
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)]
+    [ValidateSet('Desktop', 'Server')]
+    [string]$Environment,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ComputerName = $env:COMPUTERNAME,
+
+    [string]$GitUserName,
+    [string]$GitUserEmail,
+    [string]$RepoUrl,
+    [switch]$NonInteractive,
+
+    [ValidateSet('Any', 'Domain', 'Private', 'Public')]
+    [string[]]$AppPortProfile
+)
+
+# Script configuration
+$ErrorActionPreference = "Stop"
+$ScriptRoot = $PSScriptRoot
+$LogFile = Join-Path $ScriptRoot "setup-log-$ComputerName-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+
+# Import common module
+Import-Module "$PSScriptRoot\lib\common.psm1" -Force
+Set-LogFile -Path $LogFile
+
+# Banner
+function Show-Banner {
+    Write-Host "`n================================================" -ForegroundColor Cyan
+    Write-Host "   Catoconsting Environment Setup" -ForegroundColor Cyan
+    Write-Host "================================================" -ForegroundColor Cyan
+    Write-Host "Environment: $Environment" -ForegroundColor Yellow
+    Write-Host "Computer: $ComputerName" -ForegroundColor Yellow
+    Write-Host "Log File: $LogFile" -ForegroundColor Yellow
+    Write-Host "================================================`n" -ForegroundColor Cyan
+}
+
+# Main execution
+try {
+    # Require Administrator
+    Assert-Administrator
+
+    Show-Banner
+    Write-Log "Starting setup for $Environment environment on $ComputerName"
+
+    # Determine which setup script to run
+    $setupScript = switch ($Environment) {
+        'Desktop' { Join-Path $ScriptRoot "setup-desktop.ps1" }
+        'Server'  { Join-Path $ScriptRoot "setup-server.ps1" }
+    }
+
+    # Verify setup script exists
+    if (-not (Test-Path $setupScript)) {
+        throw "Setup script not found: $setupScript"
+    }
+
+    Write-Log "Executing setup script: $setupScript"
+
+    # Execute the appropriate setup script
+    $setupArgs = @{ ComputerName = $ComputerName; LogFile = $LogFile }
+    $passThrough = switch ($Environment) {
+        'Desktop' { 'GitUserName', 'GitUserEmail', 'RepoUrl', 'NonInteractive' }
+        'Server'  { 'AppPortProfile' }
+    }
+    foreach ($name in $passThrough) {
+        if ($PSBoundParameters.ContainsKey($name)) { $setupArgs[$name] = $PSBoundParameters[$name] }
+    }
+    & $setupScript @setupArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Environment setup reported failed steps (exit code $LASTEXITCODE)"
+    }
+
+    Write-Log "Setup completed successfully!" "SUCCESS"
+    Write-Host "`n================================================" -ForegroundColor Green
+    Write-Host "   Setup Completed Successfully!" -ForegroundColor Green
+    Write-Host "================================================" -ForegroundColor Green
+    Write-Host "Review the log file for details: $LogFile`n" -ForegroundColor Yellow
+
+} catch {
+    Write-Log "Setup failed: $($_.Exception.Message)" "ERROR"
+    Write-Host "`n================================================" -ForegroundColor Red
+    Write-Host "   Setup Failed!" -ForegroundColor Red
+    Write-Host "================================================" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Check log file: $LogFile`n" -ForegroundColor Yellow
+    exit 1
+}
